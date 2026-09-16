@@ -1,0 +1,94 @@
+Subject: build: require module BTF for gpu_ext interfaces
+
+Base: NVIDIA 615.71.09 (61dcc93722ecb418bb5f2e00923f05b4b8051dd1)
+Apply with git apply, in series order. Compilation and runtime validation pending.
+
+--- a/kernel-open/Kbuild
++++ b/kernel-open/Kbuild
+@@ -17,6 +17,17 @@
+ #
+ 
+ NV_BUILD_TYPE ?= release
++
++# Both gpu_ext interfaces depend on module BTF and JIT-backed struct_ops.
++ifneq ($(filter nvidia nvidia-uvm,$(NV_KERNEL_MODULES)),)
++ ifeq ($(filter clean,$(MAKECMDGOALS)),)
++  ifneq ($(CONFIG_BPF_SYSCALL)$(CONFIG_BPF_JIT)$(CONFIG_DEBUG_INFO_BTF)$(CONFIG_DEBUG_INFO_BTF_MODULES),yyyy)
++   $(error gpu_ext requires CONFIG_BPF_SYSCALL=y CONFIG_BPF_JIT=y CONFIG_DEBUG_INFO_BTF=y CONFIG_DEBUG_INFO_BTF_MODULES=y)
++  endif
++ endif
++endif
++
++export NV_GPU_EXT_STRICT_BTF := 1
+ 
+ #
+ # Utility macro ASSIGN_PER_OBJ_CFLAGS: to control CFLAGS on a
+--- a/kernel-open/Makefile
++++ b/kernel-open/Makefile
+@@ -17,6 +17,8 @@
+ ifneq ($(KERNELRELEASE),)
+   include $(src)/Kbuild
+ else
++
++  .DEFAULT_GOAL := modules
+ 
+   # Determine the location of the Linux kernel source tree, and of the
+   # kernel's output tree.  Use this to invoke Kbuild, and pass the paths
+@@ -110,6 +112,15 @@
+ 
+   export ORIG_PAHOLE := $(PAHOLE)
+ 
++  # Module BTF is required for both gpu_ext policy interfaces.
++  export NV_GPU_EXT_STRICT_BTF := 1
++
++  .PHONY: gpu-ext-preflight
++  gpu-ext-preflight:
++	@sh $(CURDIR)/gpu-ext/check-prerequisites.sh "$(KERNEL_OUTPUT)"
++
++  modules: gpu-ext-preflight
++
+   .PHONY: modules module clean clean_conftest modules_install
+   modules clean modules_install:
+ 	@$(MAKE) "LD=$(LD)" "CC=$(CC)" "OBJDUMP=$(OBJDUMP)" \
+--- a/kernel-open/pahole.sh
++++ b/kernel-open/pahole.sh
+@@ -51,6 +51,11 @@
+     $DRY_RUN "$PAHOLE" "$@"
+     ret=$?
+ 
++    # gpu_ext registration requires BTF, so encoding failures must stop its build.
++    if [ "${NV_GPU_EXT_STRICT_BTF:-0}" = "1" ]; then
++        exit "$ret"
++    fi
++
+     # Until pahole 1.31, return code was still an error regardless of
+     # --btf_encode_force / --btf_features=encode_force.
+     # A pure version check is not possible as it's likely that pahole
+--- /dev/null
++++ b/kernel-open/gpu-ext/check-prerequisites.sh
+@@ -0,0 +1,25 @@
++#!/bin/sh
++# Validate the target kernel without invoking a compiler or modifying it.
++set -eu
++
++kernel_output=${1:?Usage: check-prerequisites.sh KERNEL_OUTPUT}
++config_file=$kernel_output/.config
++
++if [ ! -r "$config_file" ]; then
++    printf 'gpu_ext: missing target kernel configuration: %s\n' "$config_file" >&2
++    exit 1
++fi
++
++for option in CONFIG_BPF_SYSCALL CONFIG_BPF_JIT CONFIG_DEBUG_INFO_BTF CONFIG_DEBUG_INFO_BTF_MODULES; do
++    if ! grep -qx "$option=y" "$config_file"; then
++        printf 'gpu_ext: target kernel requires %s=y\n' "$option" >&2
++        exit 1
++    fi
++done
++
++if [ ! -s "$kernel_output/vmlinux" ]; then
++    printf 'gpu_ext: matching target vmlinux is required for module BTF: %s/vmlinux\n' "$kernel_output" >&2
++    exit 1
++fi
++
++printf 'gpu_ext: target kernel configuration and vmlinux prerequisites are present.\n'

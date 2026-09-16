@@ -1,0 +1,112 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+set -eu
+
+# A root control command must not resolve utilities through an untrusted PATH.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+usage()
+{
+    printf '%s\n' \
+        'Usage: gpu-ext-mode MODE [UID]' \
+        '       gpu-ext-mode status [UID]' \
+        'Modes: auto, gaming, workstation, low-latency, ai, server' \
+        'UID defaults to the invoking sudo user or the current non-root user.' \
+        'Mode changes require root; status does not.'
+}
+
+fail()
+{
+    printf 'gpu-ext-mode: %s\n' "$*" >&2
+    exit 1
+}
+
+if [ "$#" -eq 1 ] && { [ "$1" = --help ] || [ "$1" = -h ]; }; then
+    usage
+    exit 0
+fi
+[ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }
+mode=$1
+case "$mode" in
+    auto|gaming|workstation|low-latency|ai|server|status) ;;
+    *) fail "Unsupported mode: $mode" ;;
+esac
+
+current_uid=$(id -u)
+if [ "$#" -eq 2 ]; then
+    target_uid=$2
+elif [ "$current_uid" -eq 0 ]; then
+    target_uid=${SUDO_UID:-}
+    [ -n "$target_uid" ] || fail 'Root must supply the target UID explicitly when SUDO_UID is unavailable.'
+else
+    target_uid=$current_uid
+fi
+case "$target_uid" in
+    ''|*[!0-9]*) fail 'UID must contain decimal digits only.' ;;
+esac
+# Canonical decimal UIDs prevent octal interpretation and duplicate config paths.
+while [ "${target_uid#0}" != "$target_uid" ]; do
+    target_uid=${target_uid#0}
+done
+[ -n "$target_uid" ] || fail 'UID 0 is not a supported policy target.'
+[ "${#target_uid}" -le 10 ] || fail 'UID is out of range.'
+[ "$target_uid" -le 4294967294 ] || fail 'UID is out of range.'
+
+unit="gpu-ext@${target_uid}.service"
+config_directory=/etc/gpu-ext/modes
+config_file="$config_directory/$target_uid.conf"
+
+if [ "$mode" = status ]; then
+    configured_mode=auto
+    if [ -f "$config_file" ]; then
+        configured_mode=$(sed -n 's/^GPU_EXT_MODE=//p' "$config_file")
+        case "$configured_mode" in
+            auto|gaming|workstation|low-latency|ai|server) ;;
+            *) fail "Invalid mode configuration: $config_file" ;;
+        esac
+    fi
+    printf 'Target UID: %s\nConfigured mode: %s\n' "$target_uid" "$configured_mode"
+    exec systemctl show "$unit" --property=LoadState,ActiveState,SubState,ExecMainStatus
+fi
+
+[ "$current_uid" -eq 0 ] || fail "Mode changes require root. Run: sudo gpu-ext-mode $mode $target_uid"
+
+ensure_config_directory()
+{
+    directory=$1
+    [ ! -L "$directory" ] || fail "Configuration directory must not be a symbolic link: $directory"
+    if [ ! -e "$directory" ]; then
+        mkdir -m 0755 "$directory"
+        chown 0:0 "$directory"
+    fi
+    [ -d "$directory" ] || fail "Configuration path is not a directory: $directory"
+    [ "$(stat -c %u "$directory")" -eq 0 ] || fail "Configuration directory must be root-owned: $directory"
+    permissions=$(stat -c %a "$directory")
+    [ "$((0$permissions & 0022))" -eq 0 ] || fail "Configuration directory must not be group or world writable: $directory"
+}
+
+ensure_config_directory /etc/gpu-ext
+ensure_config_directory "$config_directory"
+[ ! -L "$config_file" ] || fail "Configuration file must not be a symbolic link: $config_file"
+if [ -e "$config_file" ] && [ ! -f "$config_file" ]; then
+    fail "Configuration path is not a regular file: $config_file"
+fi
+umask 022
+temp_file=$(mktemp "$config_directory/.$target_uid.conf.XXXXXX")
+trap 'rm -f -- "$temp_file"' EXIT
+trap 'exit 1' HUP INT TERM
+printf 'GPU_EXT_MODE=%s\n' "$mode" > "$temp_file"
+chmod 0644 "$temp_file"
+chown 0:0 "$temp_file"
+mv -fT -- "$temp_file" "$config_file"
+trap - EXIT HUP INT TERM
+
+if ! systemctl restart "$unit"; then
+    fail "Mode $mode was saved, but $unit could not restart. Inspect: journalctl -u $unit"
+fi
+if ! systemctl is-active --quiet "$unit"; then
+    fail "Mode $mode was saved, but $unit is not active. Inspect: journalctl -u $unit"
+fi
+printf 'Selected mode: %s\nActive service: %s\n' "$mode" "$unit"
+printf '%s\n' 'Restart GPU applications to create new GPU contexts for the selected mode.'

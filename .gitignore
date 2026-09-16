@@ -1,0 +1,17 @@
+userspace/.output/
+userspace/gpu_sched_gaming
+*.o
+*.ko
+*.ko.*
+*.a
+*.so
+*.so.*
+*.skel.h
+vmlinux.h
+*.rej
+*.orig
+*.log
+__pycache__/
+.env
+.env.*
+!.env.example

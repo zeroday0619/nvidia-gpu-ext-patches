@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+[Unit]
+Description=GPU scheduling policy for user %i
+After=systemd-modules-load.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=30s
+Environment=GPU_EXT_MODE=auto
+EnvironmentFile=-/etc/gpu-ext/modes/%i.conf
+ExecStart=/usr/local/libexec/gpu-ext/gpu_sched_gaming --auto-detect --uid %i --mode ${GPU_EXT_MODE} --rules /etc/gpu-ext/applications.conf
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+# Module BTF enumeration and descriptor lookup require CAP_SYS_ADMIN on Linux 7.2.
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_RESOURCE CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+
+[Install]
+WantedBy=multi-user.target
