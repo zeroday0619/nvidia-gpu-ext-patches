@@ -40,6 +40,6 @@ The scripts require the exact baseline commit and a pristine Git working tree.
 They do not build, install, or load anything. Continue with the
 [driver guide](docs/driver.md), then the [userspace guide](docs/usage.md).
 
-This repository contains AI-assisted changes. Human review and target-system
-validation remain required. See the repository license and attribution files
-for redistribution terms.
+## AI-Generated Code Notice
+
+Parts of this project were created with assistance from AI tools (e.g. large language models). All AI-assisted contributions were reviewed and adapted by maintainers before inclusion. If you need provenance for specific changes, please refer to the Git history and commit messages.
